@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Background Replace (WebGL2 + Mediapipe)</title>
+  <style>
+    body { display: flex; flex-direction: column; align-items: center; }
+    video, canvas { width: 640px; height: 480px; background: black; }
+    .controls { margin: 10px; }
+    button, input { margin: 5px; padding: 6px 12px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+</head>
+<body>
+  <div class="controls">
+    <button onclick="setMode('original')">Original</button>
+    <button onclick="setMode('blur')">Blur</button>
+    <button onclick="setMode('image')">Image</button>
+    <button onclick="setMode('video')">Video</button>
+    <input type="file" id="bgImageInput" accept="image/*">
+    <input type="file" id="bgVideoInput" accept="video/*">
+  </div>
+
+  <!-- Camera -->
+  <video class="input_video" autoplay playsinline muted></video>
+  <canvas class="output_canvas"></canvas>
+
+  <!-- Backgrounds -->
+  <video id="bgVideo" loop muted style="display:none"></video>
+  <img id="bgImage" style="display:none">
+
+  <script>
+    const videoElement = document.querySelector('.input_video');
+    const canvasElement = document.querySelector('.output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    const bgImage = document.getElementById("bgImage");
+    const bgVideo = document.getElementById("bgVideo");
+
+    let mode = "original"; 
+    let processing = false; // lock send()
+
+    function setMode(newMode) {
+      mode = newMode;
+      if (mode === "video") bgVideo.play();
+      else bgVideo.pause();
+    }
+
+    // Upload ảnh nền
+    document.getElementById("bgImageInput").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (ev) => { bgImage.src = ev.target.result; };
+        reader.readAsDataURL(file);
+      }
+    });
+
+    // Upload video nền
+    document.getElementById("bgVideoInput").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const url = URL.createObjectURL(file);
+        bgVideo.src = url;
+        bgVideo.play();
+      }
+    });
+
+    // Mediapipe SelfieSegmentation
+    const selfieSegmentation = new SelfieSegmentation({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+    });
+    selfieSegmentation.setOptions({ modelSelection: 1 });
+
+    selfieSegmentation.onResults((results) => {
+      processing = false; // unlock sau khi xử lý xong
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      if (mode === "original") {
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      } else if (mode === "blur") {
+        // Mask
+        canvasCtx.drawImage(results.segmentationMask, 0, 0, canvasElement.width, canvasElement.height);
+
+        // Background blur
+        canvasCtx.globalCompositeOperation = 'source-out';
+        canvasCtx.filter = 'blur(12px)';
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.filter = 'none';
+
+        // Foreground
+        canvasCtx.globalCompositeOperation = 'destination-atop';
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      } else if (mode === "image" || mode === "video") {
+        let background = null;
+        if (mode === "image" && bgImage.src) background = bgImage;
+        if (mode === "video" && bgVideo.src) background = bgVideo;
+
+        canvasCtx.drawImage(results.segmentationMask, 0, 0, canvasElement.width, canvasElement.height);
+
+        if (background) {
+          canvasCtx.globalCompositeOperation = 'source-out';
+          canvasCtx.drawImage(background, 0, 0, canvasElement.width, canvasElement.height);
+        }
+
+        canvasCtx.globalCompositeOperation = 'destination-atop';
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+      }
+
+      canvasCtx.restore();
+    });
+
+    // Camera config (resize 640x480 để tránh memory lỗi)
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480 }
+        });
+        videoElement.srcObject = stream;
+        videoElement.play();
+
+        // Loop segmentation
+        async function renderLoop() {
+          if (!processing && videoElement.readyState >= 2) {
+            processing = true;
+            await selfieSegmentation.send({ image: videoElement });
+          }
+          requestAnimationFrame(renderLoop);
+        }
+        renderLoop();
+      } catch (err) {
+        console.error("Camera error:", err);
+      }
+    }
+
+    startCamera();
+  </script>
+</body>
+</html>
